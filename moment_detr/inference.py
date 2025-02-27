@@ -11,7 +11,7 @@ import torch.backends.cudnn as cudnn
 from torch.utils.data import DataLoader
 
 from moment_detr.config import TestOptions
-from moment_detr.model import build_model
+from moment_detr.model import build_model, build_moment_mamba
 from moment_detr.span_utils import span_cxw_to_xx
 from moment_detr.start_end_dataset import StartEndDataset, start_end_collate, prepare_batch_inputs
 from moment_detr.postprocessing_moment_detr import PostProcessorDETR
@@ -192,7 +192,8 @@ def eval_epoch(model, eval_dataset, opt, save_submission_filename, epoch_i=None,
 def setup_model(opt):
     """setup model/optimizer/scheduler and load checkpoints when needed"""
     logger.info("setup model/optimizer/scheduler")
-    model, criterion = build_model(opt)
+    # model, criterion = build_model(opt)
+    model, criterion = build_moment_mamba(opt)
     if opt.device.type == "cuda":
         logger.info("CUDA enabled.")
         model.to(opt.device)

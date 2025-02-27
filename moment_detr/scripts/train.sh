@@ -4,14 +4,19 @@ v_feat_types=slowfast_clip
 t_feat_type=clip 
 results_root=results
 exp_id=exp
+# exp_id=exp_charades
 
 ######## data paths
 train_path=data/highlight_train_release.jsonl
 eval_path=data/highlight_val_release.jsonl
 eval_split_name=val
+# train_path=data/charades_sta_train.jsonl
+# eval_path=data/charades_sta_test.jsonl
+# eval_split_name=val
 
 ######## setup video+text features
 feat_root=features
+# feat_root=charades_sta_features
 
 # video features
 v_feat_dim=0

@@ -10,6 +10,7 @@ from moment_detr.span_utils import generalized_temporal_iou, span_cxw_to_xx
 
 from moment_detr.matcher import build_matcher
 from moment_detr.transformer import build_transformer
+from moment_detr.mamba import build_mamba_encoder, build_attentional_decoder
 from moment_detr.position_encoding import build_position_encoding
 from moment_detr.misc import accuracy
 
@@ -143,6 +144,132 @@ class MomentDETR(nn.Module):
     #     # as a dict having both a Tensor and a list.
     #     return [{'pred_logits': a, 'pred_spans': b}
     #             for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
+
+
+class MomentMamba(nn.Module):
+    """ This is the Moment-DETR module that performs moment localization. """
+
+    def __init__(self, mamba_vid_encoder, mamba_txt_encoder, attentional_decoder,
+                 txt_dim, vid_dim, num_queries,  input_dropout, aux_loss=False,
+                 contrastive_align_loss=False, contrastive_hdim=64,
+                 max_v_l=75, span_loss_type="l1", use_txt_pos=False, n_input_proj=2):
+        """ Initializes the model.
+        Parameters:
+            mamba_vid_encoder/mamba_txt_encoder: torch module of the MambaEncoder. See mamba.py
+            attentional_decoder: torch module of the transformer decoder. See transformer.py and also mamba.py
+            txt_dim: int, text query input dimension
+            vid_dim: int, video feature input dimension
+            num_queries: number of object queries, ie detection slot. This is the maximal number of objects
+                         Moment-DETR can detect in a single video.
+            aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
+            contrastive_align_loss: If true, perform span - tokens contrastive learning
+            contrastive_hdim: dimension used for projecting the embeddings before computing contrastive loss
+            max_v_l: int, maximum #clips in videos
+            span_loss_type: str, one of [l1, ce]
+                l1: (center-x, width) regression.
+                ce: (st_idx, ed_idx) classification.
+            # foreground_thd: float, intersection over prediction >= foreground_thd: labeled as foreground
+            # background_thd: float, intersection over prediction <= background_thd: labeled background
+        """
+        super().__init__()
+        self.num_queries = num_queries
+        self.mamba_vid_encoder = mamba_vid_encoder
+        self.mamba_txt_encoder = mamba_txt_encoder
+        self.attentional_decoder = attentional_decoder
+        hidden_dim = mamba_vid_encoder.d_model
+        self.span_loss_type = span_loss_type
+        self.max_v_l = max_v_l
+        span_pred_dim = 2 if span_loss_type == "l1" else max_v_l * 2
+        self.span_embed = MLP(hidden_dim, hidden_dim, span_pred_dim, 3)
+        self.class_embed = nn.Linear(hidden_dim, 2)  # 0: background, 1: foreground
+        self.use_txt_pos = use_txt_pos
+        self.n_input_proj = n_input_proj
+        # self.foreground_thd = foreground_thd
+        # self.background_thd = background_thd
+        self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        relu_args = [True] * 3
+        relu_args[n_input_proj-1] = False
+        self.input_txt_proj = nn.Sequential(*[
+            LinearLayer(txt_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
+            LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
+            LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
+        ][:n_input_proj])
+        self.input_vid_proj = nn.Sequential(*[
+            LinearLayer(vid_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
+            LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
+            LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
+        ][:n_input_proj])
+        self.contrastive_align_loss = contrastive_align_loss
+        if contrastive_align_loss:
+            self.contrastive_align_projection_query = nn.Linear(hidden_dim, contrastive_hdim)
+            self.contrastive_align_projection_txt = nn.Linear(hidden_dim, contrastive_hdim)
+            self.contrastive_align_projection_vid = nn.Linear(hidden_dim, contrastive_hdim)
+
+        self.saliency_proj = nn.Linear(hidden_dim, 1)
+        self.aux_loss = aux_loss
+
+    def forward(self, src_txt, src_txt_mask, src_vid, src_vid_mask):
+        """The forward expects two tensors:
+               - src_txt: [batch_size, L_txt, D_txt]
+               - src_txt_mask: [batch_size, L_txt], containing 0 on padded pixels,
+                    will convert to 1 as padding later for transformer
+               - src_vid: [batch_size, L_vid, D_vid]
+               - src_vid_mask: [batch_size, L_vid], containing 0 on padded pixels,
+                    will convert to 1 as padding later for transformer
+
+            It returns a dict with the following elements:
+               - "pred_spans": The normalized boxes coordinates for all queries, represented as
+                               (center_x, width). These values are normalized in [0, 1],
+                               relative to the size of each individual image (disregarding possible padding).
+                               See PostProcess for information on how to retrieve the unnormalized bounding box.
+               - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
+                                dictionnaries containing the two above keys for each decoder layer.
+        """
+        src_vid = self.input_vid_proj(src_vid)  # (bsz, L_vid, d)
+        src_txt = self.input_txt_proj(src_txt)  # (bsz, L_txt, d)
+        # src = torch.cat([src_vid, src_txt], dim=1)  # (bsz, L_vid+L_txt, d)
+        # mask = torch.cat([src_vid_mask, src_txt_mask], dim=1).bool()  # (bsz, L_vid+L_txt)
+        vid_memory = self.mamba_vid_encoder(src_vid)  # (bsz, L_vid, d)
+        txt_memory = self.mamba_txt_encoder(src_txt)  # (bsz, L_txt, d)
+        
+        bsz = src_vid.shape[0]
+        query_embed = self.query_embed.weight.unsqueeze(0).repeat(bsz, 1, 1)  # (bsz, #queries, d)
+        tgt = torch.zeros_like(query_embed)
+        # (#layers, bsz, #queries, d)
+        hs = self.attentional_decoder(tgt, txt_memory, vid_memory, src_txt_mask, src_vid_mask, query_embed)
+        
+        outputs_class = self.class_embed(hs)  # (#layers, batch_size, #queries, #classes)
+        outputs_coord = self.span_embed(hs)  # (#layers, bsz, #queries, 2 or max_v_l * 2)
+        if self.span_loss_type == "l1":
+            outputs_coord = outputs_coord.sigmoid()
+        out = {'pred_logits': outputs_class[-1], 'pred_spans': outputs_coord[-1]}
+
+        txt_mem = txt_memory  # (bsz, L_txt, d)
+        vid_mem = vid_memory  # (bsz, L_vid, d)
+        if self.contrastive_align_loss:
+            proj_queries = F.normalize(self.contrastive_align_projection_query(hs), p=2, dim=-1)
+            proj_txt_mem = F.normalize(self.contrastive_align_projection_txt(txt_mem), p=2, dim=-1)
+            proj_vid_mem = F.normalize(self.contrastive_align_projection_vid(vid_mem), p=2, dim=-1)
+            out.update(dict(
+                proj_queries=proj_queries[-1],
+                proj_txt_mem=proj_txt_mem,
+                proj_vid_mem=proj_vid_mem
+            ))
+
+        txt_end_indices = src_txt_mask.sum(dim=1) - 1
+        txt_end_indices = txt_end_indices.to(dtype=torch.int)
+        txt_repr = txt_mem[range(bsz), txt_end_indices, :].unsqueeze(1)  # (bsz, 1, d)
+        out["saliency_scores"] = self.saliency_proj(vid_mem + txt_repr).squeeze(-1)  # (bsz, L_vid)
+
+        if self.aux_loss:
+            # assert proj_queries and proj_txt_mem
+            out['aux_outputs'] = [
+                {'pred_logits': a, 'pred_spans': b} for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
+            if self.contrastive_align_loss:
+                assert proj_queries is not None
+                for idx, d in enumerate(proj_queries[:-1]):
+                    out['aux_outputs'][idx].update(dict(proj_queries=d, proj_txt_mem=proj_txt_mem))
+        return out
 
 
 class SetCriterion(nn.Module):
@@ -405,6 +532,66 @@ def build_model(args):
         transformer,
         position_embedding,
         txt_position_embedding,
+        txt_dim=args.t_feat_dim,
+        vid_dim=args.v_feat_dim,
+        num_queries=args.num_queries,
+        input_dropout=args.input_dropout,
+        aux_loss=args.aux_loss,
+        contrastive_align_loss=args.contrastive_align_loss,
+        contrastive_hdim=args.contrastive_hdim,
+        span_loss_type=args.span_loss_type,
+        use_txt_pos=args.use_txt_pos,
+        n_input_proj=args.n_input_proj,
+    )
+
+    matcher = build_matcher(args)
+    weight_dict = {"loss_span": args.span_loss_coef,
+                   "loss_giou": args.giou_loss_coef,
+                   "loss_label": args.label_loss_coef,
+                   "loss_saliency": args.lw_saliency}
+    if args.contrastive_align_loss:
+        weight_dict["loss_contrastive_align"] = args.contrastive_align_loss_coef
+    # TODO this is a hack
+    if args.aux_loss:
+        aux_weight_dict = {}
+        for i in range(args.dec_layers - 1):
+            aux_weight_dict.update({k + f'_{i}': v for k, v in weight_dict.items() if k != "loss_saliency"})
+        weight_dict.update(aux_weight_dict)
+
+    losses = ['spans', 'labels', 'saliency']
+    if args.contrastive_align_loss:
+        losses += ["contrastive_align"]
+    criterion = SetCriterion(
+        matcher=matcher, weight_dict=weight_dict, losses=losses,
+        eos_coef=args.eos_coef, temperature=args.temperature,
+        span_loss_type=args.span_loss_type, max_v_l=args.max_v_l,
+        saliency_margin=args.saliency_margin
+    )
+    criterion.to(device)
+    return model, criterion
+
+def build_moment_mamba(args):
+    # the `num_classes` naming here is somewhat misleading.
+    # it indeed corresponds to `max_obj_id + 1`, where max_obj_id
+    # is the maximum id for a class in your dataset. For example,
+    # COCO has a max_obj_id of 90, so we pass `num_classes` to be 91.
+    # As another example, for a dataset that has a single class with id 1,
+    # you should pass `num_classes` to be 2 (max_obj_id + 1).
+    # For more details on this, check the following discussion
+    # https://github.com/facebookresearch/moment_detr/issues/108#issuecomment-650269223
+    device = torch.device(args.device)
+    
+    mamba_vid_encoder = build_mamba_encoder(args.hidden_dim, args.enc_layers)
+    mamba_txt_encoder = build_mamba_encoder(args.hidden_dim, args.enc_layers)
+    decoder = build_attentional_decoder(
+        args.hidden_dim, args.nheads, args.dec_layers, args.dim_feedforward,
+        args.dropout, normalize_before=args.pre_norm, return_intermediate=True
+    )
+
+    model = MomentMamba(
+        mamba_vid_encoder,
+        mamba_txt_encoder,
+        decoder,
         txt_dim=args.t_feat_dim,
         vid_dim=args.v_feat_dim,
         num_queries=args.num_queries,

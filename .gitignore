@@ -10,6 +10,8 @@ tmp*.py
 *tmp*
 *pickle
 credentials
+charades_sta_features/
+features/
 
 # compiled files #
 *.pyc
