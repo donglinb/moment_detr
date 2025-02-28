@@ -2,6 +2,7 @@
 """
 DETR model and criterion classes.
 """
+from functools import partial
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -581,11 +582,16 @@ def build_moment_mamba(args):
     # https://github.com/facebookresearch/moment_detr/issues/108#issuecomment-650269223
     device = torch.device(args.device)
 
-    mamba_vid_encoder = build_mamba_encoder(args.hidden_dim, args.enc_layers)
+    if args.no_encoder:
+        encoder_fn = nn.Identity
+    else:
+        encoder_fn = partial(build_mamba_encoder, args.hidden_dim, args.enc_layers)
+
+    mamba_vid_encoder = encoder_fn()
     if args.share_vid_txt_encoder:
         mamba_txt_encoder = mamba_vid_encoder
     else:
-        mamba_txt_encoder = build_mamba_encoder(args.hidden_dim, args.enc_layers)
+        mamba_txt_encoder = encoder_fn()
 
     decoder = build_attentional_decoder(
         args.hidden_dim, args.nheads, args.dec_layers, args.dim_feedforward,

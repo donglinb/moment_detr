@@ -84,6 +84,7 @@ class BaseOptions(object):
         # Mamba
         parser.add_argument('--no_share_vid_txt_encoder', dest='share_vid_txt_encoder', action='store_false')
         parser.add_argument('--no_share_vid_txt_attn', dest='share_vid_txt_attn', action='store_false')
+        parser.add_argument('--no_encoder', action='store_true', help='Do not use vid/txt encoder')
         # * Transformer
         parser.add_argument('--enc_layers', default=2, type=int,
                             help="Number of encoding layers in the transformer")
