@@ -164,11 +164,14 @@ def _get_clones(module, N):
 class AttentionalDecoderLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1,
-                 activation="relu", normalize_before=False):
+                 activation="relu", normalize_before=False, share_attn=False):
         super().__init__()
         self.d_model = d_model
         self.txt_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
-        self.vid_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        if share_attn:
+            self.vid_attn = self.txt_attn
+        else:
+            self.vid_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
         # Implementation of Feedforward model
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
@@ -274,13 +277,18 @@ def build_mamba_encoder(d_model, n_layer):
     return MambaEncoder(
         d_model=d_model,
         n_layer=n_layer,
-        d_intermediate=0
+        d_intermediate=0,
+        ssm_cfg={
+            'layer' : 'Mamba1',  # Mamba1 / Mamba2
+            'd_state' : 16,
+            'expand' : 2,
+        }
     )
 
 def build_attentional_decoder(d_model=512, nhead=8, num_layers=6, dim_feedforward=2048,
                               dropout=0.1, activation='relu', normalize_before=False,
-                              return_intermediate=False):
-    decoder_layer = AttentionalDecoderLayer(d_model, nhead, dim_feedforward, dropout, activation, normalize_before)
+                              return_intermediate=False, share_attn=False):
+    decoder_layer = AttentionalDecoderLayer(d_model, nhead, dim_feedforward, dropout, activation, normalize_before, share_attn)
     decoder_norm = nn.LayerNorm(d_model)
     decoder = AttentionalDecoder(decoder_layer, num_layers, decoder_norm, return_intermediate)
     for p in decoder.parameters():

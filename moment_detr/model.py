@@ -176,7 +176,7 @@ class MomentMamba(nn.Module):
         self.mamba_vid_encoder = mamba_vid_encoder
         self.mamba_txt_encoder = mamba_txt_encoder
         self.attentional_decoder = attentional_decoder
-        hidden_dim = mamba_vid_encoder.d_model
+        hidden_dim = attentional_decoder.d_model
         self.span_loss_type = span_loss_type
         self.max_v_l = max_v_l
         span_pred_dim = 2 if span_loss_type == "l1" else max_v_l * 2
@@ -580,12 +580,17 @@ def build_moment_mamba(args):
     # For more details on this, check the following discussion
     # https://github.com/facebookresearch/moment_detr/issues/108#issuecomment-650269223
     device = torch.device(args.device)
-    
+
     mamba_vid_encoder = build_mamba_encoder(args.hidden_dim, args.enc_layers)
-    mamba_txt_encoder = build_mamba_encoder(args.hidden_dim, args.enc_layers)
+    if args.share_vid_txt_encoder:
+        mamba_txt_encoder = mamba_vid_encoder
+    else:
+        mamba_txt_encoder = build_mamba_encoder(args.hidden_dim, args.enc_layers)
+
     decoder = build_attentional_decoder(
         args.hidden_dim, args.nheads, args.dec_layers, args.dim_feedforward,
-        args.dropout, normalize_before=args.pre_norm, return_intermediate=True
+        args.dropout, normalize_before=args.pre_norm, return_intermediate=True,
+        share_attn=args.share_vid_txt_attn
     )
 
     model = MomentMamba(

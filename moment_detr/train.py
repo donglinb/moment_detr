@@ -16,7 +16,9 @@ from torch.utils.tensorboard import SummaryWriter
 from moment_detr.config import BaseOptions
 from moment_detr.start_end_dataset import \
     StartEndDataset, start_end_collate, prepare_batch_inputs
-from moment_detr.inference import eval_epoch, start_inference, setup_model
+from moment_detr.inference import (
+    start_inference, setup_model, compute_mr_results, eval_submission, eval_epoch
+)
 from utils.basic_utils import AverageMeter, dict_to_markdown
 from utils.model_utils import count_parameters
 
@@ -134,6 +136,15 @@ def train(model, criterion, optimizer, lr_scheduler, train_dataset, val_dataset,
                 metrics_no_nms, metrics_nms, eval_loss_meters, latest_file_paths = \
                     eval_epoch(model, val_dataset, opt, save_submission_filename, epoch_i, criterion, tb_writer)
 
+            # evaluate metrics on training set
+            with torch.no_grad():
+                eval_loader = DataLoader(train_dataset, collate_fn=start_end_collate, batch_size=opt.eval_bsz,
+                    num_workers=opt.num_workers, shuffle=False, pin_memory=opt.pin_memory)
+                metrics = eval_submission(compute_mr_results(model, eval_loader, opt)[0], train_dataset.data, False)
+            for k, v in metrics["brief"].items():
+                tb_writer.add_scalar(f"Train/{k}", float(v), epoch_i+1)
+            logger.info("metrics_training {}".format(pprint.pformat(metrics["brief"], indent=4)))
+
             # log
             to_write = opt.eval_log_txt_formatter.format(
                 time_str=time.strftime("%Y_%m_%d_%H_%M_%S"),
@@ -245,7 +256,7 @@ def start_training():
 
     model, criterion, optimizer, lr_scheduler = setup_model(opt)
     logger.info(f"Model {model}")
-    count_parameters(model)
+    opt.num_all_params, opt.num_trainable_params = count_parameters(model)
     logger.info("Start Training...")
     train(model, criterion, optimizer, lr_scheduler, train_dataset, eval_dataset, opt)
     return opt.ckpt_filepath.replace(".ckpt", "_best.ckpt"), opt.eval_split_name, opt.eval_path, opt.debug
