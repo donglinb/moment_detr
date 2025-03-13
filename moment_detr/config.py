@@ -12,6 +12,7 @@ class BaseOptions(object):
     tensorboard_log_dir = "tensorboard_log"
     train_log_filename = "train.log.txt"
     eval_log_filename = "eval.log.txt"
+    available_augmentations = ['raw', 'rotate', 'translate', 'shear', 'flip', 'color', 'pepper-salt']
 
     def __init__(self):
         self.parser = None
@@ -77,6 +78,8 @@ class BaseOptions(object):
         parser.add_argument("--v_feat_dim", type=int, help="video feature dim")
         parser.add_argument("--t_feat_dim", type=int, help="text/query feature dim")
         parser.add_argument("--ctx_mode", type=str, default="video_tef")
+        parser.add_argument('--augmentations', type=str, nargs='*', default=None,
+                            choices=self.available_augmentations + ['all'])
 
         # Model config
         parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned'),
@@ -165,6 +168,9 @@ class BaseOptions(object):
         if opt.debug:
             opt.results_root = os.path.sep.join(opt.results_root.split(os.path.sep)[:-1] + ["debug_results", ])
             opt.num_workers = 0
+
+        if opt.augmentations is not None and 'all' in opt.augmentations:
+            opt.augmentations = self.available_augmentations
 
         if isinstance(self, TestOptions):
             # modify model_dir to absolute path

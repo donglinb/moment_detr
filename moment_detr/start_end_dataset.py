@@ -29,7 +29,8 @@ class StartEndDataset(Dataset):
                  q_feat_type="last_hidden_state",
                  max_q_l=32, max_v_l=75, data_ratio=1.0, ctx_mode="video",
                  normalize_v=True, normalize_t=True, load_labels=True,
-                 clip_len=2, max_windows=5, span_loss_type="l1", txt_drop_ratio=0):
+                 clip_len=2, max_windows=5, span_loss_type="l1", txt_drop_ratio=0,
+                 video_augmentation_keys=None):
         self.dset_name = dset_name
         self.data_path = data_path
         self.data_ratio = data_ratio
@@ -51,6 +52,13 @@ class StartEndDataset(Dataset):
         self.txt_drop_ratio = txt_drop_ratio
         if "val" in data_path or "test" in data_path:
             assert txt_drop_ratio == 0
+        # current augmentations used:
+        # ['raw', 'rotate', 'translate', 'shear', 'flip', 'color', 'pepper-salt']
+        if video_augmentation_keys is None:
+            video_augmentation_keys = []
+        self.video_augmentation_keys = video_augmentation_keys
+        if len(video_augmentation_keys) > 0:
+            print('use video augmentations:', video_augmentation_keys)
 
         # checks
         assert q_feat_type in self.Q_FEAT_TYPES
@@ -196,9 +204,13 @@ class StartEndDataset(Dataset):
 
     def _get_video_feat_by_vid(self, vid):
         v_feat_list = []
+        if len(self.video_augmentation_keys) > 0:
+            feat_key = 'features_' + random.choice(self.video_augmentation_keys)
+        else:
+            feat_key = 'features'
         for _feat_dir in self.v_feat_dirs:
             _feat_path = join(_feat_dir, f"{vid}.npz")
-            _feat = np.load(_feat_path)["features"][:self.max_v_l].astype(np.float32)
+            _feat = np.load(_feat_path)[feat_key][:self.max_v_l].astype(np.float32)
             if self.normalize_v:
                 _feat = l2_normalize_np_array(_feat)
             v_feat_list.append(_feat)

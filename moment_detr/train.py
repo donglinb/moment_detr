@@ -239,7 +239,8 @@ def start_training():
         clip_len=opt.clip_length,
         max_windows=opt.max_windows,
         span_loss_type=opt.span_loss_type,
-        txt_drop_ratio=opt.txt_drop_ratio
+        txt_drop_ratio=opt.txt_drop_ratio,
+        video_augmentation_keys=opt.augmentations
     )
 
     dataset_config["data_path"] = opt.train_path
@@ -249,6 +250,7 @@ def start_training():
         dataset_config["data_path"] = opt.eval_path
         dataset_config["txt_drop_ratio"] = 0
         dataset_config["q_feat_dir"] = opt.t_feat_dir.replace("sub_features", "text_features")  # for pretraining
+        dataset_config['video_augmentation_keys'] = None if opt.augmentations is None else ['raw']
         # dataset_config["load_labels"] = False  # uncomment to calculate eval loss
         eval_dataset = StartEndDataset(**dataset_config)
     else:
