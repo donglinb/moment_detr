@@ -193,50 +193,67 @@ class AttentionalDecoderLayer(nn.Module):
     def forward_post(self, tgt, txt_memory, vid_memory,
                      txt_key_padding_mask: Optional[Tensor] = None,
                      vid_key_padding_mask: Optional[Tensor] = None,
-                     query_pos: Optional[Tensor] = None):
-        tgt2 = self.txt_attn(query=self.with_pos_embed(tgt, query_pos),
-                             key=txt_memory, value=txt_memory,
-                             key_padding_mask=txt_key_padding_mask)[0]
+                     query_pos: Optional[Tensor] = None,
+                     output_attn_weights: bool = False):
+        attn_weights = {}
+        tgt2, attn_weights['txt_attn'] = self.txt_attn(
+            query=self.with_pos_embed(tgt, query_pos),
+            key=txt_memory, value=txt_memory,
+            key_padding_mask=txt_key_padding_mask
+        )
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
-        tgt2 = self.vid_attn(query=self.with_pos_embed(tgt, query_pos),
-                             key=vid_memory, value=vid_memory,
-                             key_padding_mask=vid_key_padding_mask)[0]
+        tgt2, attn_weights['vid_attn'] = self.vid_attn(
+            query=self.with_pos_embed(tgt, query_pos),
+            key=vid_memory, value=vid_memory,
+            key_padding_mask=vid_key_padding_mask
+        )
         tgt = tgt + self.dropout2(tgt2)
         tgt = self.norm2(tgt)
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
         tgt = tgt + self.dropout3(tgt2)
         tgt = self.norm3(tgt)
-        return tgt
+        if output_attn_weights:
+            return tgt, attn_weights
+        return tgt, None
 
     def forward_pre(self, tgt, txt_memory, vid_memory,
                     txt_key_padding_mask: Optional[Tensor] = None,
                     vid_key_padding_mask: Optional[Tensor] = None,
-                    query_pos: Optional[Tensor] = None):
+                    query_pos: Optional[Tensor] = None,
+                    output_attn_weights: bool = False):
+        attn_weights = {}
         tgt2 = self.norm1(tgt)
-        tgt2 = self.txt_attn(query=self.with_pos_embed(tgt2, query_pos),
-                             key=txt_memory, value=txt_memory,
-                             key_padding_mask=txt_key_padding_mask)[0]
+        tgt2, attn_weights['txt_attn'] = self.txt_attn(
+            query=self.with_pos_embed(tgt2, query_pos),
+            key=txt_memory, value=txt_memory,
+            key_padding_mask=txt_key_padding_mask
+        )
         tgt = tgt + self.dropout1(tgt2)
         tgt2 = self.norm2(tgt)
-        tgt2 = self.vid_attn(query=self.with_pos_embed(tgt2, query_pos),
-                             key=vid_memory, value=vid_memory,
-                             key_padding_mask=vid_key_padding_mask)[0]
+        tgt2, attn_weights['vid_attn'] = self.vid_attn(
+            query=self.with_pos_embed(tgt2, query_pos),
+            key=vid_memory, value=vid_memory,
+            key_padding_mask=vid_key_padding_mask
+        )
         tgt = tgt + self.dropout2(tgt2)
         tgt2 = self.norm3(tgt)
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt2))))
         tgt = tgt + self.dropout3(tgt2)
-        return tgt
+        if output_attn_weights:
+            return tgt, attn_weights
+        return tgt, None
 
     def forward(self, tgt, txt_memory, vid_memory,
                 txt_key_padding_mask: Optional[Tensor] = None,
                 vid_key_padding_mask: Optional[Tensor] = None,
-                query_pos: Optional[Tensor] = None):
+                query_pos: Optional[Tensor] = None,
+                output_attn_weights: bool = False):
         if self.normalize_before:
             return self.forward_pre(tgt, txt_memory, vid_memory,
-                txt_key_padding_mask, vid_key_padding_mask, query_pos)
+                txt_key_padding_mask, vid_key_padding_mask, query_pos, output_attn_weights)
         return self.forward_post(tgt, txt_memory, vid_memory,
-                txt_key_padding_mask, vid_key_padding_mask, query_pos)
+                txt_key_padding_mask, vid_key_padding_mask, query_pos, output_attn_weights)
 
 
 class AttentionalDecoder(nn.Module):
@@ -252,14 +269,18 @@ class AttentionalDecoder(nn.Module):
     def forward(self, tgt, txt_memory, vid_memory,
                 txt_key_padding_mask: Optional[Tensor] = None,
                 vid_key_padding_mask: Optional[Tensor] = None,
-                query_pos: Optional[Tensor] = None):
+                query_pos: Optional[Tensor] = None,
+                output_attn_weights: bool = False):
         output = tgt
         intermediate = []
+        attn_weights_all_layers = []
         for layer in self.layers:
-            output = layer(output, txt_memory, vid_memory,
-                txt_key_padding_mask, vid_key_padding_mask, query_pos)
+            output, attn_weights = layer(output, txt_memory, vid_memory,
+                txt_key_padding_mask, vid_key_padding_mask, query_pos, output_attn_weights)
             if self.return_intermediate:
                 intermediate.append(output)
+            if output_attn_weights:
+                attn_weights_all_layers.append(attn_weights)
 
         if self.norm is not None:
             output = self.norm(output)
@@ -268,9 +289,9 @@ class AttentionalDecoder(nn.Module):
                 intermediate.append(output)
 
         if self.return_intermediate:
-            return torch.stack(intermediate)
+            return torch.stack(intermediate), attn_weights_all_layers
 
-        return output.unsqueeze(0)
+        return output.unsqueeze(0), attn_weights_all_layers
 
 
 def build_mamba_encoder(d_model, n_layer):

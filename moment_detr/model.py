@@ -209,7 +209,7 @@ class MomentMamba(nn.Module):
         self.saliency_proj = nn.Linear(hidden_dim, 1)
         self.aux_loss = aux_loss
 
-    def forward(self, src_txt, src_txt_mask, src_vid, src_vid_mask):
+    def forward(self, src_txt, src_txt_mask, src_vid, src_vid_mask, **kwargs):
         """The forward expects two tensors:
                - src_txt: [batch_size, L_txt, D_txt]
                - src_txt_mask: [batch_size, L_txt], containing 0 on padded pixels,
@@ -233,17 +233,23 @@ class MomentMamba(nn.Module):
         vid_memory = self.mamba_vid_encoder(src_vid)  # (bsz, L_vid, d)
         txt_memory = self.mamba_txt_encoder(src_txt)  # (bsz, L_txt, d)
         
+        output_attn_weights = kwargs.get('output_attn_weights', False)
         bsz = src_vid.shape[0]
         query_embed = self.query_embed.weight.unsqueeze(0).repeat(bsz, 1, 1)  # (bsz, #queries, d)
         tgt = torch.zeros_like(query_embed)
-        # (#layers, bsz, #queries, d)
-        hs = self.attentional_decoder(tgt, txt_memory, vid_memory, src_txt_mask, src_vid_mask, query_embed)
+        # (#layers, bsz, #queries, d), [dict(str, Tensor)]
+        hs, attn_weights = self.attentional_decoder(tgt, txt_memory, vid_memory,
+                                    src_txt_mask, src_vid_mask,
+                                    query_embed, output_attn_weights)
         
         outputs_class = self.class_embed(hs)  # (#layers, batch_size, #queries, #classes)
         outputs_coord = self.span_embed(hs)  # (#layers, bsz, #queries, 2 or max_v_l * 2)
         if self.span_loss_type == "l1":
             outputs_coord = outputs_coord.sigmoid()
         out = {'pred_logits': outputs_class[-1], 'pred_spans': outputs_coord[-1]}
+
+        if output_attn_weights:
+            out['attn_weights'] = attn_weights
 
         txt_mem = txt_memory  # (bsz, L_txt, d)
         vid_mem = vid_memory  # (bsz, L_vid, d)
